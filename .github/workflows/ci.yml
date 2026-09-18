@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+
+    env:
+      DB_PASSWORD: ci-test-password
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Start PostgreSQL and Kafka
+        run: docker compose up -d
+
+      - name: Wait for infrastructure
+        run: |
+          for i in {1..30}; do
+            POSTGRES_READY=$(docker compose exec -T postgres pg_isready -U postgres -d midasdb >/dev/null 2>&1; echo $?)
+            KAFKA_READY=$(docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list >/dev/null 2>&1; echo $?)
+
+            if [ "$POSTGRES_READY" -eq 0 ] && [ "$KAFKA_READY" -eq 0 ]; then
+              echo "PostgreSQL and Kafka are ready."
+              exit 0
+            fi
+
+            echo "Waiting for infrastructure... attempt $i/30"
+            sleep 2
+          done
+
+          echo "Infrastructure did not become ready in time."
+          docker compose ps
+          docker compose logs --tail=100
+          exit 1
+
+      - name: Run tests
+        run: |
+          chmod +x mvnw
+          ./mvnw -B clean test
+
+      - name: Stop infrastructure
+        if: always()
+        run: docker compose down
